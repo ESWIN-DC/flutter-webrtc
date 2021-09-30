@@ -26,6 +26,12 @@ class FlutterVideoRenderer
 
   int64_t texture_id() { return texture_id_; }
 
+  bool CheckMediaStream(std::string mediaId);
+
+  bool CheckVideoTrack(std::string mediaId);
+
+  std::string media_stream_id;
+
  private:
   struct FrameSize {
     size_t width;

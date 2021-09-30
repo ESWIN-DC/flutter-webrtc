@@ -14,6 +14,7 @@
 #include <list>
 #include <map>
 #include <memory>
+#include <mutex>
 
 #include "libwebrtc.h"
 #include "rtc_audio_device.h"
@@ -24,11 +25,6 @@
 #include "rtc_peerconnection_factory.h"
 #include "rtc_video_device.h"
 #include "uuidxx.h"
-
-#ifdef WIN32
-#undef strncpy
-#define strncpy strncpy_s
-#endif
 
 namespace flutter_webrtc_plugin {
 
@@ -67,6 +63,13 @@ inline EncodableMap findMap(const EncodableMap& map, const std::string& key) {
   return EncodableMap();
 }
 
+inline EncodableList findList(const EncodableMap& map, const std::string& key) {
+  auto it = map.find(EncodableValue(key));
+  if (it != map.end() && TypeIs<EncodableList>(it->second))
+    return GetValue<EncodableList>(it->second);
+  return EncodableList();
+}
+
 inline std::string findString(const EncodableMap& map, const std::string& key) {
   auto it = map.find(EncodableValue(key));
   if (it != map.end() && TypeIs<std::string>(it->second))
@@ -82,10 +85,12 @@ inline int findInt(const EncodableMap& map, const std::string& key) {
 }
 
 inline int64_t findLongInt(const EncodableMap& map, const std::string& key) {
-  auto it = map.find(EncodableValue(key));
-  if (it != map.end() && TypeIs<int64_t>(it->second) ||
-      TypeIs<int32_t>(it->second))
-    return GetValue<int64_t>(it->second);
+  for (auto it : map) {
+    if (key == GetValue<std::string>(it.first) &&
+        (TypeIs<int64_t>(it.second) || TypeIs<int32_t>(it.second)))
+      return GetValue<int64_t>(it.second);
+  }
+
   return -1;
 }
 
@@ -108,6 +113,15 @@ class FlutterWebRTCBase {
 
   void RemovePeerConnectionForId(const std::string& id);
 
+  RTCMediaTrack* MediaTrackForId(const std::string& id);
+
+  void RemoveMediaTrackForId(const std::string& id);
+
+  FlutterPeerConnectionObserver* PeerConnectionObserversForId(
+      const std::string& id);
+
+  void RemovePeerConnectionObserversForId(const std::string& id);
+
   scoped_refptr<RTCMediaStream> MediaStreamForId(const std::string& id);
 
   void RemoveStreamForId(const std::string& id);
@@ -120,6 +134,10 @@ class FlutterWebRTCBase {
 
   bool ParseRTCConfiguration(const EncodableMap& map,
                              RTCConfiguration& configuration);
+
+  scoped_refptr<RTCMediaTrack> MediaTracksForId(const std::string& id);
+
+  void RemoveTracksForId(const std::string& id);
 
  private:
   void ParseConstraints(const EncodableMap& src,
@@ -137,13 +155,17 @@ class FlutterWebRTCBase {
 
   std::map<std::string, scoped_refptr<RTCPeerConnection>> peerconnections_;
   std::map<std::string, scoped_refptr<RTCMediaStream>> local_streams_;
-  std::map<std::string, scoped_refptr<RTCMediaTrack>> media_tracks_;
+  std::map<std::string, scoped_refptr<RTCMediaTrack>> local_tracks_;
   std::map<std::string, scoped_refptr<RTCDataChannel>> data_channels_;
   std::map<int64_t, std::shared_ptr<FlutterVideoRenderer>> renders_;
   std::map<int, std::shared_ptr<FlutterRTCDataChannelObserver>>
       data_channel_observers_;
   std::map<std::string, std::shared_ptr<FlutterPeerConnectionObserver>>
       peerconnection_observers_;
+  mutable std::mutex mutex_;
+
+  void lock() { mutex_.lock(); }
+  void unlock() { mutex_.unlock(); }
 
  protected:
   BinaryMessenger* messenger_;

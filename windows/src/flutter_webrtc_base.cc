@@ -12,7 +12,6 @@ FlutterWebRTCBase::FlutterWebRTCBase(BinaryMessenger* messenger,
   factory_ = LibWebRTC::CreateRTCPeerConnectionFactory();
   audio_device_ = factory_->GetAudioDevice();
   video_device_ = factory_->GetVideoDevice();
-  memset(&configuration_.ice_servers, 0, sizeof(configuration_.ice_servers));
 }
 
 FlutterWebRTCBase::~FlutterWebRTCBase() {
@@ -37,6 +36,38 @@ void FlutterWebRTCBase::RemovePeerConnectionForId(const std::string& id) {
   auto it = peerconnections_.find(id);
   if (it != peerconnections_.end())
     peerconnections_.erase(it);
+}
+
+RTCMediaTrack* FlutterWebRTCBase ::MediaTrackForId(const std::string& id) {
+  auto it = local_tracks_.find(id);
+
+  if (it != local_tracks_.end())
+    return (*it).second.get();
+
+  return nullptr;
+}
+
+void FlutterWebRTCBase::RemoveMediaTrackForId(const std::string& id) {
+  auto it = local_tracks_.find(id);
+  if (it != local_tracks_.end())
+    local_tracks_.erase(it);
+}
+
+FlutterPeerConnectionObserver* FlutterWebRTCBase::PeerConnectionObserversForId(
+    const std::string& id) {
+  auto it = peerconnection_observers_.find(id);
+
+  if (it != peerconnection_observers_.end())
+    return (*it).second.get();
+
+  return nullptr;
+}
+
+void FlutterWebRTCBase::RemovePeerConnectionObserversForId(
+    const std::string& id) {
+  auto it = peerconnection_observers_.find(id);
+  if (it != peerconnection_observers_.end())
+    peerconnection_observers_.erase(it);
 }
 
 scoped_refptr<RTCMediaStream> FlutterWebRTCBase::MediaStreamForId(
@@ -90,10 +121,16 @@ void FlutterWebRTCBase::ParseConstraints(
     } else {
       value = std::to_string(GetValue<int>(v));
     }
-    if (type == kMandatory)
+    if (type == kMandatory) {
       mediaConstraints->AddMandatoryConstraint(key.c_str(), value.c_str());
-    else
+    } else {
       mediaConstraints->AddOptionalConstraint(key.c_str(), value.c_str());
+      if (key == "DtlsSrtpKeyAgreement") {
+        configuration_.srtp_type = GetValue<bool>(v)
+                                       ? MediaSecurityType::kDTLS_SRTP
+                                       : MediaSecurityType::kSDES_SRTP;
+      }
+    }
   }
 }
 
@@ -147,12 +184,12 @@ bool FlutterWebRTCBase::CreateIceServers(const EncodableList& iceServersArray,
         std::string credential = GetValue<std::string>(
             iceServerMap.find(EncodableValue("credential"))->second);
         std::string uri = GetValue<std::string>(it->second);
-        strncpy(ice_server.username, username.c_str(), username.size());
-        strncpy(ice_server.password, credential.c_str(), credential.size());
-        strncpy(ice_server.uri, uri.c_str(), uri.size());
+        ice_server.username = username;
+        ice_server.password = credential;
+        ice_server.uri = uri;
       } else {
         std::string uri = GetValue<std::string>(it->second);
-        strncpy(ice_server.uri, uri.c_str(), uri.size());
+        ice_server.uri = uri;
       }
     }
     it = iceServerMap.find(EncodableValue("urls"));
@@ -164,12 +201,12 @@ bool FlutterWebRTCBase::CreateIceServers(const EncodableList& iceServersArray,
           std::string credential = GetValue<std::string>(
               iceServerMap.find(EncodableValue("credential"))->second);
           std::string uri = GetValue<std::string>(it->second);
-          strncpy(ice_server.username, username.c_str(), username.size());
-          strncpy(ice_server.password, credential.c_str(), credential.size());
-          strncpy(ice_server.uri, uri.c_str(), uri.size());
+          ice_server.username = username;
+          ice_server.password = credential;
+          ice_server.uri = uri;
         } else {
           std::string uri = GetValue<std::string>(it->second);
-          strncpy(ice_server.uri, uri.c_str(), uri.size());
+          ice_server.uri = uri;
         }
       }
       if (TypeIs<EncodableList>(it->second)) {
@@ -185,12 +222,11 @@ bool FlutterWebRTCBase::CreateIceServers(const EncodableList& iceServersArray,
                   iceServerMap.find(EncodableValue("username"))->second);
               std::string credential = GetValue<std::string>(
                   iceServerMap.find(EncodableValue("credential"))->second);
-              strncpy(ice_server.username, username.c_str(), username.size());
-              strncpy(ice_server.password, credential.c_str(),
-                      credential.size());
-              strncpy(ice_server.uri, value.c_str(), value.size());
+              ice_server.username = username;
+              ice_server.password = credential;
+              ice_server.uri = value;
             } else {
-              strncpy(ice_server.uri, value.c_str(), value.size());
+              ice_server.uri = value;
             }
           }
         }
@@ -212,13 +248,13 @@ bool FlutterWebRTCBase::ParseRTCConfiguration(const EncodableMap& map,
   if (it != map.end() && TypeIs<std::string>(it->second)) {
     std::string v = GetValue<std::string>(it->second);
     if (v == "all")  // public
-      conf.type = kAll;
+      conf.type = IceTransportsType::kAll;
     else if (v == "relay")
-      conf.type = kRelay;
+      conf.type = IceTransportsType::kRelay;
     else if (v == "nohost")
-      conf.type = kNoHost;
+      conf.type = IceTransportsType::kNoHost;
     else if (v == "none")
-      conf.type = kNone;
+      conf.type = IceTransportsType::kNone;
   }
 
   // bundlePolicy (public api)
@@ -238,9 +274,9 @@ bool FlutterWebRTCBase::ParseRTCConfiguration(const EncodableMap& map,
   if (it != map.end() && TypeIs<std::string>(it->second)) {
     std::string v = GetValue<std::string>(it->second);
     if (v == "negotiate")  // public
-      conf.rtcp_mux_policy = kRtcpMuxPolicyNegotiate;
+      conf.rtcp_mux_policy = RtcpMuxPolicy::kRtcpMuxPolicyNegotiate;
     else if (v == "require")  // public
-      conf.rtcp_mux_policy = kRtcpMuxPolicyRequire;
+      conf.rtcp_mux_policy = RtcpMuxPolicy::kRtcpMuxPolicyRequire;
   }
 
   // FIXME: peerIdentity of type DOMString (public API)
@@ -251,7 +287,32 @@ bool FlutterWebRTCBase::ParseRTCConfiguration(const EncodableMap& map,
     conf.ice_candidate_pool_size = GetValue<int>(it->second);
   }
 
+  // sdpSemantics (public api)
+  it = map.find(EncodableValue("sdpSemantics"));
+  if (it != map.end() && TypeIs<std::string>(it->second)) {
+    std::string v = GetValue<std::string>(it->second);
+    if (v == "plan-b")  // public
+      conf.sdp_semantics = SdpSemantics::kPlanB;
+    else if (v == "unified-plan")  // public
+      conf.sdp_semantics = SdpSemantics::kUnifiedPlan;
+  }
   return true;
+}
+
+scoped_refptr<RTCMediaTrack> FlutterWebRTCBase::MediaTracksForId(
+    const std::string& id) {
+  auto it = local_tracks_.find(id);
+  if (it != local_tracks_.end()) {
+    return (*it).second;
+  }
+
+  return nullptr;
+}
+
+void FlutterWebRTCBase::RemoveTracksForId(const std::string& id) {
+  auto it = local_tracks_.find(id);
+  if (it != local_tracks_.end())
+    local_tracks_.erase(it);
 }
 
 }  // namespace flutter_webrtc_plugin
